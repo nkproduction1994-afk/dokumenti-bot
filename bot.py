@@ -398,10 +398,46 @@ async def _process_ai_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE, us
     except Exception as e:
         await thinking_msg.edit_text(f"❌ Greška: {str(e)}")
 
+
+async def goca_zanimljivost(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Šalje zanimljivost o puževima putem AI."""
+    thinking_msg = await update.message.reply_text("🐌 _Tražim zanimljivost o puževima..._", parse_mode="Markdown")
+    try:
+        prompt = "Napiši jednu kratku i zanimljivu činjenicu o puževima. Max 3 rečenice. Budi zabavan i interesantan. Počni sa emoji pužem 🐌."
+        
+        contents = [
+            {"role": "user", "parts": [{"text": prompt}]}
+        ]
+        payload = {
+            "contents": contents,
+            "generationConfig": {"maxOutputTokens": 200, "temperature": 1.0}
+        }
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-001:generateContent?key={GEMINI_API_KEY}"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for attempt in range(3):
+                response = await client.post(url, json=payload)
+                if response.status_code == 429:
+                    await asyncio.sleep(10 * (attempt + 1))
+                    continue
+                response.raise_for_status()
+                data = response.json()
+                tekst = data["candidates"][0]["content"]["parts"][0]["text"]
+                await thinking_msg.edit_text(tekst)
+                return
+        await thinking_msg.edit_text("⚠️ Gemini je zauzet, pokušaj malo kasnije.")
+    except Exception as e:
+        await thinking_msg.edit_text(f"❌ Greška: {str(e)}")
+
 async def brzi_unos(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     # Ako je AI mod aktivan, preusmjeri na AI
+    # Goca trigger
+    if text.lower() == "goca":
+        await goca_zanimljivost(update, ctx)
+        return
+
     if ctx.user_data.get("ai_mode", False):
         if text.lower() in ["/kraj", "/stop", "kraj", "stop", "izlaz"]:
             ctx.user_data["ai_mode"] = False
