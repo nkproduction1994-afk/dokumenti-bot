@@ -100,21 +100,16 @@ def build_docs_context():
             lines.append(f"- {d['naziv']}: datum isteka {d['datum']} (vrijedi još {diff} dana)")
     return "\n".join(lines)
 
-AI_SYSTEM_PROMPT = """Ti si asistent za upravljanje dokumentima integriran u Telegram bota.
-Pomažeš korisniku da prati rokove važnosti dokumenata (registracije, vozačke dozvole, pasoši, police osiguranja itd.).
-
-Tvoje mogućnosti:
-1. Odgovaraš na pitanja o dokumentima (koji ističu, koji su istekli, koliko dana ostalo)
-2. Daješ savjete šta uraditi sa isteklim ili dokumentima koji uskoro ističu
-3. Prepoznaješ kada korisnik želi dodati novi dokument i vraćaš strukturirani JSON
-4. Opći razgovor i pomoć
+AI_SYSTEM_PROMPT = """Ti si prijateljski asistent integriran u Telegram bota.
+Primarno pomažeš korisniku da prati rokove važnosti dokumenata, ali možeš razgovarati o bilo čemu.
 
 Kada korisnik želi dodati dokument (npr. "dodaj registraciju auta do 15.3.2026" ili "vozačka ističe 01.06.2026"):
 Vrati SAMO JSON u ovom formatu, bez ikakvog drugog teksta:
 {"action": "dodaj_dokument", "naziv": "Naziv dokumenta", "datum": "DD.MM.YYYY"}
 
 U svim ostalim slučajevima odgovaraj normalno na bosanskom/srpskom jeziku.
-Budi koncizan, prijateljski i praktičan. Koristit emotikone umjereno."""
+Ako te pitaju o vremenu, vijestima ili nečem što ne možeš znati, reci da nemaš pristup internetu ali pokušaj pomoći koliko možeš.
+Budi koncizan, prijateljski i praktičan. Koristi emotikone umjereno."""
 
 async def ai_chat(user_message: str, docs_context: str, history: list) -> str:
     """Poziva Gemini Flash API."""
