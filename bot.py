@@ -123,15 +123,17 @@ async def ai_chat(user_message: str, docs_context: str, history: list) -> str:
 
     system_with_context = f"{AI_SYSTEM_PROMPT}\n\nTrenutno stanje dokumenata:\n{docs_context}"
 
-    # Gemini format za historiju
-    contents = []
+    # System prompt kao prvi user/model par
+    contents = [
+        {"role": "user", "parts": [{"text": system_with_context}]},
+        {"role": "model", "parts": [{"text": "Razumijem, spreman sam pomoci."}]},
+    ]
     for msg in history:
         role = "user" if msg["role"] == "user" else "model"
         contents.append({"role": role, "parts": [{"text": msg["content"]}]})
     contents.append({"role": "user", "parts": [{"text": user_message}]})
 
     payload = {
-        "system_instruction": {"parts": [{"text": system_with_context}]},
         "contents": contents,
         "generationConfig": {
             "maxOutputTokens": 1000,
