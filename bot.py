@@ -141,7 +141,7 @@ async def ai_chat(user_message: str, docs_context: str, history: list) -> str:
         }
     }
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-001:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         for attempt in range(3):
@@ -412,7 +412,7 @@ async def goca_zanimljivost(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "contents": contents,
             "generationConfig": {"maxOutputTokens": 200, "temperature": 1.0}
         }
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-001:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         
         async with httpx.AsyncClient(timeout=30.0) as client:
             for attempt in range(3):
