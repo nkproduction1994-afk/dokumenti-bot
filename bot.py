@@ -10,7 +10,6 @@ from telegram.ext import (
     filters, ContextTypes, ConversationHandler, 
     CallbackQueryHandler
 )
-from openai import AsyncOpenAI
 
 # ==================== LOGGING ====================
 logging.basicConfig(
@@ -21,58 +20,55 @@ logger = logging.getLogger(__name__)
 
 # ==================== KONFIGURACIJA ====================
 TOKEN = os.environ.get("BOT_TOKEN")
+
+# Opciono: DeepSeek AI (ako nema ključa, AI neće raditi - nije greška)
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 
-# Provjera da li je API ključ postavljen
-if not DEEPSEEK_API_KEY:
-    logger.warning("⚠️ DEEPSEEK_API_KEY nije postavljen! AI chat neće raditi.")
-
-# Inicijalizacija DeepSeek klijenta (ako ima ključa)
+# Inicijalizacija DeepSeek (samo ako ima ključa)
 deepseek_client = None
 if DEEPSEEK_API_KEY:
-    deepseek_client = AsyncOpenAI(
-        api_key=DEEPSEEK_API_KEY,
-        base_url="https://api.deepseek.com/v1"
-    )
-    logger.info("✅ DeepSeek AI klijent inicijaliziran")
+    try:
+        from openai import AsyncOpenAI
+        deepseek_client = AsyncOpenAI(
+            api_key=DEEPSEEK_API_KEY,
+            base_url="https://api.deepseek.com/v1"
+        )
+        logger.info("✅ DeepSeek AI klijent inicijaliziran")
+    except ImportError:
+        logger.warning("⚠️ openai biblioteka nije instalirana. Instaliraj sa: pip install openai")
+    except Exception as e:
+        logger.error(f"❌ Greška pri inicijalizaciji DeepSeek: {e}")
 
-# Fajlovi za podatke - koristimo Railway volume (perzistentni storage)
-DATA_FILE = "data/dokumenti.json"
-SETTINGS_FILE = "data/settings.json"
-USERS_FILE = "data/users.json"
-CHAT_HISTORY_FILE = "data/chat_history.json"
-
-# Kreiraj data folder ako ne postoji
-os.makedirs("data", exist_ok=True)
+# Fajlovi za podatke
+DATA_FILE = "dokumenti.json"
+SETTINGS_FILE = "settings.json"
+USERS_FILE = "users.json"
 
 # Konstantne za ConversationHandler
-NAZIV, DATUM, KATEGORIJA, PRIORITET, NAPOMENA = range(5)
+NAZIV, DATUM, KATEGORIJA, PRIORITET = range(4)
 KATEGORIJE = ["📄 Lična", "💼 Poslovna", "🏥 Zdravstvo", "🚗 Auto", "🏠 Stambena", "🔒 Osiguranje", "🎓 Obrazovna", "💳 Finansijska"]
 PRIORITETI = [("🔴 Visok", "high"), ("🟠 Srednji", "medium"), ("🟢 Nizak", "low")]
 
 # ==================== POMOĆNE FUNKCIJE ====================
 def load_docs() -> List[Dict]:
-    """Učitaj dokumente iz JSON fajla"""
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
-        logger.error(f"Greška pri učitavanju dokumenata: {e}")
+        logger.error(f"Greška pri učitavanju: {e}")
     return []
 
 def save_docs(docs: List[Dict]) -> bool:
-    """Sačuvaj dokumente u JSON fajl"""
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(docs, f, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
-        logger.error(f"Greška pri čuvanju dokumenata: {e}")
+        logger.error(f"Greška pri čuvanju: {e}")
         return False
 
 def load_settings() -> Dict:
-    """Učitaj podešavanja"""
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -82,7 +78,6 @@ def load_settings() -> Dict:
     return {"users": {}}
 
 def save_settings(s: Dict) -> bool:
-    """Sačuvaj podešavanja"""
     try:
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(s, f, ensure_ascii=False, indent=2)
@@ -92,7 +87,6 @@ def save_settings(s: Dict) -> bool:
         return False
 
 def load_users() -> Dict:
-    """Učitaj korisnike"""
     try:
         if os.path.exists(USERS_FILE):
             with open(USERS_FILE, "r", encoding="utf-8") as f:
@@ -102,7 +96,6 @@ def load_users() -> Dict:
     return {}
 
 def save_users(users: Dict) -> bool:
-    """Sačuvaj korisnike"""
     try:
         with open(USERS_FILE, "w", encoding="utf-8") as f:
             json.dump(users, f, ensure_ascii=False, indent=2)
@@ -111,38 +104,11 @@ def save_users(users: Dict) -> bool:
         logger.error(f"Greška pri čuvanju korisnika: {e}")
         return False
 
-def load_chat_history(user_id: int) -> List[Dict]:
-    """Učitaj prethodne poruke za korisnika"""
-    try:
-        if os.path.exists(CHAT_HISTORY_FILE):
-            with open(CHAT_HISTORY_FILE, "r", encoding="utf-8") as f:
-                history = json.load(f)
-                return history.get(str(user_id), [])[-10:]
-    except Exception as e:
-        logger.error(f"Greška pri učitavanju chat historije: {e}")
-    return []
-
-def save_chat_history(user_id: int, messages: List[Dict]) -> None:
-    """Sačuvaj chat history za korisnika"""
-    try:
-        history = {}
-        if os.path.exists(CHAT_HISTORY_FILE):
-            with open(CHAT_HISTORY_FILE, "r", encoding="utf-8") as f:
-                history = json.load(f)
-        
-        history[str(user_id)] = messages[-10:]
-        with open(CHAT_HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"Greška pri čuvanju chat historije: {e}")
-
 def get_user_docs(user_id: int) -> List[Dict]:
-    """Dohvati dokumente samo za određenog korisnika"""
     docs = load_docs()
     return [d for d in docs if d.get("user_id") == user_id]
 
 def status_info(date_str: str, priority: str = "medium") -> tuple:
-    """Vrati status dokumenta sa emojijima"""
     today = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
     d = datetime.strptime(date_str, "%d.%m.%Y")
     diff = (d - today).days
@@ -159,7 +125,6 @@ def status_info(date_str: str, priority: str = "medium") -> tuple:
         return f"{priority_emoji} Za {diff}d", "ok", diff
 
 def parse_date(text: str) -> Optional[str]:
-    """Parsiraj datum iz različitih formata"""
     formats = ["%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%y"]
     for fmt in formats:
         try:
@@ -169,7 +134,6 @@ def parse_date(text: str) -> Optional[str]:
     return None
 
 def build_report(user_id: int) -> Optional[str]:
-    """Napravi izvještaj za korisnika"""
     docs = get_user_docs(user_id)
     if not docs:
         return None
@@ -191,7 +155,7 @@ def build_report(user_id: int) -> Optional[str]:
     if not expired and not critical and not soon:
         return None
 
-    msg = f"🌅 *Jutarnji izvještaj* — {today.strftime('%d.%m.%Y')}\n\n"
+    msg = f"🌅 *Izvještaj* — {today.strftime('%d.%m.%Y')}\n\n"
     
     if expired:
         msg += f"🔴 *ISTEKLO ({len(expired)}):*\n"
@@ -212,64 +176,41 @@ def build_report(user_id: int) -> Optional[str]:
     
     return msg
 
-# ==================== AI CHAT FUNKCIJA ====================
+# ==================== AI CHAT (opciono) ====================
 async def ai_chat(user_id: int, message: str) -> Optional[str]:
-    """Komuniciraj sa DeepSeek AI"""
+    """Komuniciraj sa DeepSeek AI (samo ako je podešen)"""
     if not deepseek_client:
-        return "🤖 AI chat trenutno nije dostupan. Administrator će uskoro omogućiti ovu funkciju."
+        return None  # Vrati None ako AI nije dostupan
     
     try:
-        # Učitaj prethodni kontekst
-        history = load_chat_history(user_id)
-        
-        # Pripremi poruke za API
-        messages = [
-            {"role": "system", "content": "Ti si koristan asistent na srpskom/bosanskom/hrvatskom jeziku. Odgovaraj kratko i precizno, maksimalno 3 rečenice."}
-        ]
-        
-        # Dodaj prethodne poruke iz historije
-        for h in history:
-            messages.append(h)
-        
-        # Dodaj trenutnu poruku
-        messages.append({"role": "user", "content": message})
-        
-        # Pozovi DeepSeek API
         response = await deepseek_client.chat.completions.create(
             model="deepseek-chat",
-            messages=messages,
+            messages=[
+                {"role": "system", "content": "Ti si koristan asistent na srpskom jeziku. Odgovaraj kratko."},
+                {"role": "user", "content": message}
+            ],
             max_tokens=300,
             temperature=0.7
         )
-        
-        ai_response = response.choices[0].message.content
-        
-        # Sačuvaj historiju
-        messages.append({"role": "assistant", "content": ai_response})
-        save_chat_history(user_id, messages)
-        
-        return ai_response
-        
+        return response.choices[0].message.content
     except Exception as e:
-        logger.error(f"AI chat greška: {e}")
-        return "❌ Nažalost, došlo je do greške. Pokušaj ponovo za minut."
+        logger.error(f"AI greška: {e}")
+        return None
 
 # ==================== TELEGRAM HANDLERI ====================
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Početna poruka i meni"""
     user_id = update.effective_chat.id
-    username = update.effective_user.username or "Korisnik"
     
     # Registruj korisnika
     users = load_users()
     if str(user_id) not in users:
         users[str(user_id)] = {
-            "username": username,
+            "username": update.effective_user.username or "Nema",
             "first_name": update.effective_user.first_name,
             "registered_at": datetime.now().strftime("%d.%m.%Y %H:%M")
         }
         save_users(users)
-        logger.info(f"Novi korisnik registrovan: {username} ({user_id})")
+        logger.info(f"Novi korisnik: {user_id}")
     
     keyboard = [
         [InlineKeyboardButton("📄 Dodaj dokument", callback_data="dodaj")],
@@ -279,137 +220,105 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⚙️ Podešavanja", callback_data="settings")]
     ]
     
+    ai_status = "✅ Dostupan" if deepseek_client else "❌ Nije podešen"
+    
     await update.message.reply_text(
         f"👋 *Zdravo {update.effective_user.first_name}!*\n\n"
         f"Dobrodošao u *Evidenciju dokumenata* 📋\n\n"
-        f"🤖 *Meni:*\n"
-        f"• Dodaj dokumente sa rokovima\n"
-        f"• Prati šta ističe\n"
-        f"• Postavi podsjetnike\n"
-        f"• Pitaj AI asistenta bilo šta!\n\n"
+        f"🤖 *AI Chat:* {ai_status}\n\n"
         f"📌 *Komande:*\n"
         f"/dodaj — dodaj dokument\n"
         f"/lista — svi dokumenti\n"
-        f"/uskoro — ističe uskoro\n"
         f"/hitno — ističe u 7 dana\n"
+        f"/uskoro — ističe u 30 dana\n"
         f"/isteklo — istekli dokumenti\n"
         f"/statistika — pregled\n"
+        f"/izvjestaj — ručni izvještaj\n"
         f"/pomoc — sve komande\n\n"
-        f"💬 *Prosto pitaj:*\n"
-        f"Napiši bilo šta i AI će ti odgovoriti!",
+        f"💬 *AI Chat:*\n"
+        f"Napiši bilo šta i AI će odgovoriti!",
         parse_mode="Markdown",
         reply_markup=keyboard
     )
 
 async def pomoc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Prikaži sve komande"""
     await update.message.reply_text(
         "📚 *Sve komande:*\n\n"
-        "📄 *Upravljanje dokumentima:*\n"
-        "/dodaj — dodaj novi dokument\n"
-        "/lista — prikaži sve dokumente\n"
-        "/uskoro — dokumenti koji ističu za 30 dana\n"
-        "/hitno — dokumenti koji ističu za 7 dana\n"
+        "📄 *Dokumenti:*\n"
+        "/dodaj — dodaj dokument\n"
+        "/lista — svi dokumenti\n"
+        "/hitno — ističe za 7 dana\n"
+        "/uskoro — ističe za 30 dana\n"
         "/isteklo — istekli dokumenti\n"
         "/brisanje — obriši dokument\n\n"
         "📊 *Statistika:*\n"
-        "/statistika — pregled i grafikoni\n\n"
+        "/statistika — pregled\n"
+        "/izvjestaj — izvještaj\n\n"
         "🔔 *Podsjetnici:*\n"
-        "/podsjetnik_on — uključi jutarnje podsjetnike\n"
-        "/podsjetnik_off — isključi podsjetnike\n"
-        "/izvjestaj — ručno generiši izvještaj\n\n"
-        "💬 *AI Chat:*\n"
-        "Samo napiši bilo koju poruku i AI će odgovoriti!\n\n"
+        "/podsjetnik_on — uključi\n"
+        "/podsjetnik_off — isključi\n\n"
         "❓ *Pomoć:*\n"
-        "/pomoc — ova poruka\n"
+        "/pomoc — ovo\n"
         "/start — glavni meni",
         parse_mode="Markdown"
     )
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Obradi sve poruke koje nisu komande"""
+    """Obradi poruku - ako AI radi, odgovori, inače samo običan odgovor"""
     user_id = update.effective_chat.id
     message_text = update.message.text.strip()
     
-    # Ako je poruka broj (za brisanje) - preskoči
+    # Preskoči ako je broj (za brisanje)
     if message_text.isdigit() and ctx.user_data.get("docs_za_brisanje"):
         return
     
-    # Pokaži da bot kuca
-    await ctx.bot.send_chat_action(chat_id=user_id, action="typing")
-    
-    # Pošalji AI odgovor
-    response = await ai_chat(user_id, message_text)
-    await update.message.reply_text(response, parse_mode="Markdown")
-
-async def statistika(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Prikaži statistiku dokumenata"""
-    user_id = update.effective_chat.id
-    docs = get_user_docs(user_id)
-    
-    if not docs:
-        await update.message.reply_text("📭 Nema dokumenata za statistiku. Dodaj prvi sa /dodaj")
+    # Ako AI nije dostupan
+    if not deepseek_client:
+        await update.message.reply_text(
+            "🤖 *AI chat trenutno nije dostupan.*\n\n"
+            "Možeš koristiti komande za dokumente:\n"
+            "/dodaj, /lista, /hitno, /pomoc",
+            parse_mode="Markdown"
+        )
         return
     
-    total = len(docs)
-    today = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
+    # Pokaži da bot razmišlja
+    await ctx.bot.send_chat_action(chat_id=user_id, action="typing")
     
-    expired = critical = soon = ok = 0
-    for d in docs:
-        diff = (datetime.strptime(d["datum"], "%d.%m.%Y") - today).days
-        if diff < 0:
-            expired += 1
-        elif diff <= 7:
-            critical += 1
-        elif diff <= 30:
-            soon += 1
-        else:
-            ok += 1
+    # Pokušaj dobiti AI odgovor
+    response = await ai_chat(user_id, message_text)
     
-    # Statistika po kategorijama
-    cats = {}
-    for d in docs:
-        cat = d.get("kategorija", "Bez kategorije")
-        cats[cat] = cats.get(cat, 0) + 1
-    
-    msg = f"📊 *Statistika dokumenata*\n\n"
-    msg += f"📄 Ukupno: *{total}*\n"
-    msg += f"🔴 Isteklo: *{expired}*\n"
-    msg += f"🔥 Kritično (0-7 dana): *{critical}*\n"
-    msg += f"🟡 Uskoro (8-30 dana): *{soon}*\n"
-    msg += f"🟢 Ok (>30 dana): *{ok}*\n\n"
-    msg += f"📂 *Kategorije:*\n"
-    for cat, count in sorted(cats.items(), key=lambda x: x[1], reverse=True)[:5]:
-        msg += f"• {cat}: {count}\n"
-    
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    if response:
+        await update.message.reply_text(response, parse_mode="Markdown")
+    else:
+        await update.message.reply_text(
+            "❌ *AI chat nije uspio odgovoriti.*\n\n"
+            "Provjeri da li je API ključ ispravan. Za sada možeš koristiti komande.",
+            parse_mode="Markdown"
+        )
 
 # ==================== DODAVANJE DOKUMENATA ====================
 async def dodaj_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Počni proces dodavanja dokumenta"""
     await update.message.reply_text(
-        "📄 *Naziv dokumenta?*\n\n"
-        "Primjeri: _Registracija vozila, Pasoš, Ugovor o radu_",
+        "📄 *Naziv dokumenta?*\n\nPrimjer: _Registracija vozila_",
         parse_mode="Markdown"
     )
     return NAZIV
 
 async def dodaj_naziv(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Primi naziv dokumenta"""
     ctx.user_data["naziv"] = update.message.text.strip()
     
     keyboard = [[InlineKeyboardButton(kat, callback_data=f"kat_{kat}")] for kat in KATEGORIJE]
     keyboard.append([InlineKeyboardButton("⏭️ Preskoči", callback_data="kat_skip")])
     
     await update.message.reply_text(
-        f"📂 *Izaberi kategoriju za:* _{ctx.user_data['naziv']}_",
+        f"📂 *Kategorija za:* _{ctx.user_data['naziv']}_",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return KATEGORIJA
 
 async def dodaj_kategorija(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Primi kategoriju"""
     query = update.callback_query
     await query.answer()
     
@@ -421,7 +330,7 @@ async def dodaj_kategorija(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(naziv, callback_data=f"prio_{vrijednost}")] for naziv, vrijednost in PRIORITETI]
     
     await query.edit_message_text(
-        f"⚠️ *Izaberi prioritet za:* _{ctx.user_data['naziv']}_\n\n"
+        f"⚠️ *Prioritet za:* _{ctx.user_data['naziv']}_\n\n"
         f"🔴 Visok — alarm za 7 dana\n"
         f"🟠 Srednji — alarm za 30 dana\n"
         f"🟢 Nizak — običan",
@@ -431,7 +340,6 @@ async def dodaj_kategorija(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return PRIORITET
 
 async def dodaj_prioritet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Primi prioritet"""
     query = update.callback_query
     await query.answer()
     
@@ -439,13 +347,12 @@ async def dodaj_prioritet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     await query.edit_message_text(
         f"📅 *Datum isteka za:* _{ctx.user_data['naziv']}_\n\n"
-        f"Unesi datum: `31.12.2025`, `31/12/2025` ili `31-12-2025`",
+        f"Unesi: `31.12.2025`, `31/12/2025` ili `31-12-2025`",
         parse_mode="Markdown"
     )
     return DATUM
 
 async def dodaj_datum(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Primi datum i sačuvaj dokument"""
     date_str = parse_date(update.message.text)
     if not date_str:
         await update.message.reply_text("❌ Neispravan format. Unesi: `31.12.2025`", parse_mode="Markdown")
@@ -459,7 +366,7 @@ async def dodaj_datum(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "datum": date_str,
         "kategorija": ctx.user_data.get("kategorija"),
         "priority": ctx.user_data.get("priority", "medium"),
-        "created_at": datetime.now().strftime("%d.%m.%Y %H:%M")
+        "created_at": datetime.now().strftime("%d.%m.%Y")
     }
     docs.append(doc)
     save_docs(docs)
@@ -467,24 +374,17 @@ async def dodaj_datum(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     label, _, _ = status_info(date_str, ctx.user_data.get("priority", "medium"))
     
     await update.message.reply_text(
-        f"✅ *Sačuvano!*\n\n"
-        f"📄 {doc['naziv']}\n"
-        f"📅 {doc['datum']}\n"
-        f"🏷️ {doc.get('kategorija', 'Bez kategorije')}\n"
-        f"⚠️ Prioritet: {doc.get('priority', 'srednji')}\n"
-        f"\nStatus: {label}",
+        f"✅ *Sačuvano!*\n\n📄 {doc['naziv']}\n📅 {doc['datum']}\n🏷️ {doc.get('kategorija', 'Bez kategorije')}\n\nStatus: {label}",
         parse_mode="Markdown"
     )
     return ConversationHandler.END
 
 async def dodaj_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Otkaži dodavanje"""
     await update.message.reply_text("❌ Otkazano.")
     return ConversationHandler.END
 
 # ==================== OSTALE FUNKCIJE ====================
 async def lista(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Prikaži sve dokumente"""
     user_id = update.effective_chat.id
     docs = get_user_docs(user_id)
     
@@ -497,91 +397,65 @@ async def lista(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     for d in docs_sorted[:20]:
         label, _, _ = status_info(d["datum"], d.get("priority", "medium"))
-        msg += f"{label} *{d['naziv']}*\n"
-        msg += f"📅 {d['datum']}"
-        if d.get("kategorija"):
-            msg += f" [{d['kategorija']}]"
-        msg += "\n\n"
-    
-    if len(docs_sorted) > 20:
-        msg += f"\n_... i još {len(docs_sorted) - 20} dokumenata_"
+        msg += f"{label} *{d['naziv']}*\n📅 {d['datum']}\n\n"
     
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def hitno(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Prikaži hitne dokumente (istiću u 7 dana)"""
     user_id = update.effective_chat.id
     docs = get_user_docs(user_id)
     today = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
     
-    filtered = []
-    for d in docs:
-        diff = (datetime.strptime(d["datum"], "%d.%m.%Y") - today).days
-        if 0 <= diff <= 7:
-            filtered.append((d, diff))
-    
-    filtered.sort(key=lambda x: x[1])
+    filtered = [(d, (datetime.strptime(d["datum"], "%d.%m.%Y") - today).days) 
+                for d in docs if 0 <= (datetime.strptime(d["datum"], "%d.%m.%Y") - today).days <= 7]
     
     if not filtered:
-        await update.message.reply_text("✅ Nema hitnih dokumenata (istiću u 7 dana).")
+        await update.message.reply_text("✅ Nema hitnih dokumenata.")
         return
     
-    msg = f"🔥 *HITNO! Ističe u 7 dana ({len(filtered)}):*\n\n"
-    for d, diff in filtered:
-        msg += f"• *{d['naziv']}* — za {diff} dana ⚠️\n"
+    msg = f"🔥 *Hitno ({len(filtered)}):*\n\n"
+    for d, diff in sorted(filtered, key=lambda x: x[1]):
+        msg += f"• *{d['naziv']}* — za {diff} dana\n"
     
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def uskoro(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Prikaži dokumente koji ističu za 30 dana"""
     user_id = update.effective_chat.id
     docs = get_user_docs(user_id)
     today = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
     
-    filtered = []
-    for d in docs:
-        diff = (datetime.strptime(d["datum"], "%d.%m.%Y") - today).days
-        if 0 <= diff <= 30:
-            filtered.append((d, diff))
-    
-    filtered.sort(key=lambda x: x[1])
+    filtered = [(d, (datetime.strptime(d["datum"], "%d.%m.%Y") - today).days) 
+                for d in docs if 0 <= (datetime.strptime(d["datum"], "%d.%m.%Y") - today).days <= 30]
     
     if not filtered:
-        await update.message.reply_text("✅ Nema dokumenata koji ističu u narednih 30 dana.")
+        await update.message.reply_text("✅ Nema dokumenata koji ističu.")
         return
     
     msg = f"🟡 *Uskoro ističe ({len(filtered)}):*\n\n"
-    for d, diff in filtered:
+    for d, diff in sorted(filtered, key=lambda x: x[1]):
         msg += f"• *{d['naziv']}* — za {diff} dana\n"
     
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def isteklo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Prikaži istekle dokumente"""
     user_id = update.effective_chat.id
     docs = get_user_docs(user_id)
     today = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
     
-    filtered = []
-    for d in docs:
-        diff = (datetime.strptime(d["datum"], "%d.%m.%Y") - today).days
-        if diff < 0:
-            filtered.append((d, abs(diff)))
-    
-    filtered.sort(key=lambda x: x[1])
+    filtered = [(d, abs((datetime.strptime(d["datum"], "%d.%m.%Y") - today).days)) 
+                for d in docs if (datetime.strptime(d["datum"], "%d.%m.%Y") - today).days < 0]
     
     if not filtered:
         await update.message.reply_text("✅ Nema isteklih dokumenata.")
         return
     
     msg = f"🔴 *Isteklo ({len(filtered)}):*\n\n"
-    for d, diff in filtered:
+    for d, diff in sorted(filtered, key=lambda x: x[1]):
         msg += f"• *{d['naziv']}* — {diff} dana isteklo\n"
     
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def brisanje(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Obriši dokument"""
     user_id = update.effective_chat.id
     docs = get_user_docs(user_id)
     
@@ -598,22 +472,20 @@ async def brisanje(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     keyboard.append([InlineKeyboardButton("🔙 Otkaži", callback_data="main")])
     
     await update.message.reply_text(
-        "🗑️ *Koji dokument želiš da obrišeš?*\n\n⚠️ *Ova radnja je trajna!*",
+        "🗑️ *Koji dokument da obrišem?*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def izvjestaj(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Pošalji izvještaj"""
     user_id = update.effective_chat.id
     msg = build_report(user_id)
     if msg:
         await update.message.reply_text(msg, parse_mode="Markdown")
     else:
-        await update.message.reply_text("✅ *Sve je uređeno!* Nema isteklih ni dokumenata koji uskoro ističu.", parse_mode="Markdown")
+        await update.message.reply_text("✅ *Sve je uređeno!*", parse_mode="Markdown")
 
 async def podsjetnik_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Uključi podsjetnike"""
     user_id = update.effective_chat.id
     settings = load_settings()
     if "users" not in settings:
@@ -622,10 +494,9 @@ async def podsjetnik_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         settings["users"][str(user_id)] = {}
     settings["users"][str(user_id)]["podsjetnici"] = True
     save_settings(settings)
-    await update.message.reply_text("🔔 *Podsjetnici uključeni!* Svaki dan u 8:00 dobijaš izvještaj.", parse_mode="Markdown")
+    await update.message.reply_text("🔔 *Podsjetnici uključeni!*", parse_mode="Markdown")
 
 async def podsjetnik_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Isključi podsjetnike"""
     user_id = update.effective_chat.id
     settings = load_settings()
     if "users" in settings and str(user_id) in settings["users"]:
@@ -633,20 +504,7 @@ async def podsjetnik_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         save_settings(settings)
     await update.message.reply_text("🔕 *Podsjetnici isključeni.*", parse_mode="Markdown")
 
-async def podsjetnik_job(ctx: ContextTypes.DEFAULT_TYPE):
-    """Job za slanje jutarnjih podsjetnika"""
-    settings = load_settings()
-    for user_id, user_settings in settings.get("users", {}).items():
-        if user_settings.get("podsjetnici", False):
-            msg = build_report(int(user_id))
-            if msg:
-                try:
-                    await ctx.bot.send_message(chat_id=int(user_id), text=msg, parse_mode="Markdown")
-                except Exception as e:
-                    logger.error(f"Greška pri slanju podsjetnika korisniku {user_id}: {e}")
-
 async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Obradi sve callback dugmadi"""
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -663,10 +521,7 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🏠 *Glavni meni*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
     
     elif data == "dodaj":
-        await query.edit_message_text(
-            "📄 *Naziv dokumenta?*\n\nPrimjeri: _Registracija, Pasoš, Ugovor_",
-            parse_mode="Markdown"
-        )
+        await query.edit_message_text("📄 *Naziv dokumenta?*", parse_mode="Markdown")
         return NAZIV
     
     elif data == "lista":
@@ -674,7 +529,6 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not docs:
             await query.edit_message_text("📭 Nema dokumenata.")
             return
-        
         msg = "📋 *Svi dokumenti:*\n\n"
         for d in sorted(docs, key=lambda x: datetime.strptime(x["datum"], "%d.%m.%Y"))[:10]:
             label, _, _ = status_info(d["datum"], d.get("priority", "medium"))
@@ -686,36 +540,24 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         today = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
         filtered = [(d, (datetime.strptime(d["datum"], "%d.%m.%Y") - today).days) 
                     for d in docs if 0 <= (datetime.strptime(d["datum"], "%d.%m.%Y") - today).days <= 7]
-        
         if not filtered:
-            await query.edit_message_text("✅ Nema hitnih dokumenata.")
+            await query.edit_message_text("✅ Nema hitnih.")
             return
-        
-        msg = f"🔥 *Hitno ({len(filtered)}):*\n\n"
+        msg = f"🔥 *Hitno:*\n\n"
         for d, diff in filtered:
             msg += f"• {d['naziv']} — {diff} dana\n"
         await query.edit_message_text(msg, parse_mode="Markdown")
     
     elif data == "statistika":
         docs = get_user_docs(user_id)
-        if not docs:
-            await query.edit_message_text("📭 Nema dokumenata.")
-            return
-        
         total = len(docs)
-        today = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
-        expired = sum(1 for d in docs if (datetime.strptime(d["datum"], "%d.%m.%Y") - today).days < 0)
-        
-        await query.edit_message_text(
-            f"📊 *Statistika*\n\n📄 Ukupno: {total}\n🔴 Isteklo: {expired}\n✅ Aktivnih: {total - expired}",
-            parse_mode="Markdown"
-        )
+        await query.edit_message_text(f"📊 *Statistika*\n\n📄 Ukupno: {total}", parse_mode="Markdown")
     
     elif data == "settings":
         await query.edit_message_text(
             "⚙️ *Podešavanja*\n\n"
-            "🔔 /podsjetnik_on — uključi podsjetnike\n"
-            "🔕 /podsjetnik_off — isključi podsjetnike",
+            "/podsjetnik_on — uključi\n"
+            "/podsjetnik_off — isključi",
             parse_mode="Markdown"
         )
     
@@ -727,19 +569,18 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             all_docs = load_docs()
             all_docs = [d for d in all_docs if d["id"] != doc["id"]]
             save_docs(all_docs)
-            await query.edit_message_text(f"✅ *Obrisan:* {doc['naziv']}", parse_mode="Markdown")
+            await query.edit_message_text(f"✅ Obrisan: {doc['naziv']}")
 
 # ==================== MAIN ====================
 def main():
-    """Pokreni bota"""
     if not TOKEN:
-        logger.error("BOT_TOKEN nije postavljen!")
+        logger.error("❌ BOT_TOKEN nije postavljen!")
         return
     
-    # Kreiraj aplikaciju
+    # Kreiraj aplikaciju BEZ job_queue (da ne baca grešku)
     app = Application.builder().token(TOKEN).build()
     
-    # Conversation handler za dodavanje dokumenata
+    # Conversation handler
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("dodaj", dodaj_start),
@@ -752,34 +593,31 @@ def main():
             DATUM: [MessageHandler(filters.TEXT & ~filters.COMMAND, dodaj_datum)],
         },
         fallbacks=[CommandHandler("cancel", dodaj_cancel)],
+        allow_reentry=True
     )
     
     # Dodaj sve handlere
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("pomoc", pomoc))
-    app.add_handler(CommandHandler("dodaj", dodaj_start))
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("lista", lista))
     app.add_handler(CommandHandler("hitno", hitno))
     app.add_handler(CommandHandler("uskoro", uskoro))
     app.add_handler(CommandHandler("isteklo", isteklo))
-    app.add_handler(CommandHandler("statistika", statistika))
     app.add_handler(CommandHandler("brisanje", brisanje))
     app.add_handler(CommandHandler("izvjestaj", izvjestaj))
     app.add_handler(CommandHandler("podsjetnik_on", podsjetnik_on))
     app.add_handler(CommandHandler("podsjetnik_off", podsjetnik_off))
     app.add_handler(CallbackQueryHandler(callback_handler))
     
-    # Message handler za AI chat (mora biti posljednji)
+    # Message handler za AI (mora biti posljednji)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # Dodaj job queue za jutarnje podsjetnike
-    app.job_queue.run_daily(podsjetnik_job, time=time(hour=8, minute=0), name="jutarnji_podsjetnici")
     
     # Pokreni bota
     logger.info("🤖 Bot je pokrenut!")
-    logger.info("📌 Komande: /start, /dodaj, /lista, /hitno, /statistika, /pomoc")
+    logger.info("📌 Komande: /start, /dodaj, /lista, /pomoc")
     
+    # Railway će automatski restartovati bota ako padne
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
