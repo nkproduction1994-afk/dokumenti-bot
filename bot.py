@@ -1,11 +1,13 @@
 import os
 import json
 import asyncio
+import httpx
 from datetime import datetime, time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, JobQueue
 
 TOKEN = os.environ.get("BOT_TOKEN")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 DATA_FILE = "dokumenti.json"
 SETTINGS_FILE = "settings.json"
 
@@ -80,6 +82,68 @@ def build_report():
             msg += f"• {d['naziv']} — za {diff} dana\n"
     return msg
 
+def build_docs_context():
+    """Gradi kontekst o dokumentima za AI."""
+    docs = load_docs()
+    today = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
+    if not docs:
+        return "Trenutno nema unesenih dokumenata."
+
+    lines = [f"Danas je {today.strftime('%d.%m.%Y')}. Popis dokumenata:"]
+    for d in sorted(docs, key=lambda x: datetime.strptime(x["datum"], "%d.%m.%Y")):
+        label, stype, diff = status(d["datum"])
+        if stype == "expired":
+            lines.append(f"- {d['naziv']}: datum isteka {d['datum']} (ISTEKLO prije {abs(diff)} dana)")
+        elif stype == "soon":
+            lines.append(f"- {d['naziv']}: datum isteka {d['datum']} (ističe za {diff} dana)")
+        else:
+            lines.append(f"- {d['naziv']}: datum isteka {d['datum']} (vrijedi još {diff} dana)")
+    return "\n".join(lines)
+
+AI_SYSTEM_PROMPT = """Ti si asistent za upravljanje dokumentima integriran u Telegram bota.
+Pomažeš korisniku da prati rokove važnosti dokumenata (registracije, vozačke dozvole, pasoši, police osiguranja itd.).
+
+Tvoje mogućnosti:
+1. Odgovaraš na pitanja o dokumentima (koji ističu, koji su istekli, koliko dana ostalo)
+2. Daješ savjete šta uraditi sa isteklim ili dokumentima koji uskoro ističu
+3. Prepoznaješ kada korisnik želi dodati novi dokument i vraćaš strukturirani JSON
+4. Opći razgovor i pomoć
+
+Kada korisnik želi dodati dokument (npr. "dodaj registraciju auta do 15.3.2026" ili "vozačka ističe 01.06.2026"):
+Vrati SAMO JSON u ovom formatu, bez ikakvog drugog teksta:
+{"action": "dodaj_dokument", "naziv": "Naziv dokumenta", "datum": "DD.MM.YYYY"}
+
+U svim ostalim slučajevima odgovaraj normalno na bosanskom/srpskom jeziku.
+Budi koncizan, prijateljski i praktičan. Koristit emotikone umjereno."""
+
+async def ai_chat(user_message: str, docs_context: str, history: list) -> str:
+    """Poziva Anthropic API."""
+    if not ANTHROPIC_API_KEY:
+        return "❌ AI nije konfigurisan. Postavi ANTHROPIC_API_KEY environment varijablu."
+
+    system = f"{AI_SYSTEM_PROMPT}\n\nTrenutno stanje dokumenata:\n{docs_context}"
+
+    messages = history + [{"role": "user", "content": user_message}]
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 1000,
+                "system": system,
+                "messages": messages,
+            }
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data["content"][0]["text"]
+
 async def podsjetnik_job(ctx: ContextTypes.DEFAULT_TYPE):
     settings = load_settings()
     chat_id = settings.get("chat_id")
@@ -103,6 +167,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/isteklo — istekli dokumenti\n"
         "/brisanje — obriši dokument\n"
         "/izvjestaj — pošalji izvještaj odmah\n\n"
+        "🤖 *AI Asistent:*\n"
+        "/ai ili /pitaj — razgovaraj sa AI asistentom\n"
+        "_(pita za dokumente, daje savjete, dodaje dokumente)_\n\n"
         "🔔 *Podsjetnici:*\n"
         "/podsjetnik\\_on — uključi jutarnji podsjetnik\n"
         "/podsjetnik\\_off — isključi podsjetnik\n"
@@ -148,7 +215,7 @@ async def izvjestaj(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if msg:
         await update.message.reply_text(msg, parse_mode="Markdown")
     else:
-        await update.message.reply_text("✅ *Sve je uredeno!* Nema isteklih ni dokumenata koji uskoro ističu.", parse_mode="Markdown")
+        await update.message.reply_text("✅ *Sve je uređeno!* Nema isteklih ni dokumenata koji uskoro ističu.", parse_mode="Markdown")
 
 async def dodaj_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📄 *Naziv dokumenta?*\n\nnpr. _Registracija VW Golf_", parse_mode="Markdown")
@@ -234,8 +301,106 @@ async def brisanje(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["docs_za_brisanje"] = docs_sorted
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+async def ai_komanda(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Pokreće AI asistenta — /ai ili /pitaj, opcionalno s porukom."""
+    # Inicijalizuj historiju ako ne postoji
+    if "ai_history" not in ctx.user_data:
+        ctx.user_data["ai_history"] = []
+
+    # Provjeri da li je poruka proslijeđena uz komandu (npr. /ai koji dokumenti ističu?)
+    args = ctx.args
+    if args:
+        user_text = " ".join(args)
+        await _process_ai_message(update, ctx, user_text)
+    else:
+        ctx.user_data["ai_mode"] = True
+        await update.message.reply_text(
+            "🤖 *AI Asistent aktivan!*\n\n"
+            "Pitaj me bilo šta o tvojim dokumentima ili piši slobodno.\n\n"
+            "Primjeri:\n"
+            "• _Koji dokumenti ističu uskoro?_\n"
+            "• _Šta trebam uraditi za isteklu registraciju?_\n"
+            "• _Dodaj vozačku dozvolu do 15.3.2027_\n\n"
+            "Za izlaz iz AI moda piši /kraj ili /stop",
+            parse_mode="Markdown"
+        )
+
+async def ai_stop(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Izlaz iz AI moda."""
+    ctx.user_data["ai_mode"] = False
+    ctx.user_data["ai_history"] = []
+    await update.message.reply_text(
+        "👋 AI mod zatvoren. Historija razgovora obrisana.\n\nKoristi /ai za novi razgovor.",
+        parse_mode="Markdown"
+    )
+
+async def _process_ai_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user_text: str):
+    """Obrađuje poruku kroz AI i eventualno dodaje dokument."""
+    docs_context = build_docs_context()
+    history = ctx.user_data.get("ai_history", [])
+
+    # Pošalji "kuca..." indikator
+    thinking_msg = await update.message.reply_text("🤖 _Razmišljam..._", parse_mode="Markdown")
+
+    try:
+        response_text = await ai_chat(user_text, docs_context, history)
+
+        # Provjeri da li AI želi dodati dokument (JSON akcija)
+        stripped = response_text.strip()
+        if stripped.startswith("{") and '"action": "dodaj_dokument"' in stripped:
+            try:
+                action = json.loads(stripped)
+                naziv = action.get("naziv", "")
+                datum_raw = action.get("datum", "")
+                date_str = parse_date(datum_raw)
+                if naziv and date_str:
+                    docs = load_docs()
+                    doc = {"id": int(datetime.now().timestamp()), "naziv": naziv, "datum": date_str}
+                    docs.append(doc)
+                    save_docs(docs)
+                    label, _, _ = status(date_str)
+                    await thinking_msg.edit_text(
+                        f"✅ *Dokument dodan putem AI!*\n\n📄 {naziv}\n📅 {date_str}\nStatus: {label}",
+                        parse_mode="Markdown"
+                    )
+                    # Dodaj u historiju
+                    ctx.user_data["ai_history"] = history + [
+                        {"role": "user", "content": user_text},
+                        {"role": "assistant", "content": f"Dodao sam dokument: {naziv}, datum: {date_str}"}
+                    ]
+                    return
+            except json.JSONDecodeError:
+                pass  # Nije JSON, nastavi normalno
+
+        # Normalan AI odgovor — ažuriraj poruku
+        await thinking_msg.edit_text(response_text, parse_mode="Markdown")
+
+        # Čuvaj historiju (max 10 poruka da ne bude prevelika)
+        new_history = history + [
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": response_text}
+        ]
+        ctx.user_data["ai_history"] = new_history[-10:]
+
+    except httpx.HTTPStatusError as e:
+        await thinking_msg.edit_text(f"❌ API greška: {e.response.status_code}. Provjeri API ključ.")
+    except Exception as e:
+        await thinking_msg.edit_text(f"❌ Greška: {str(e)}")
+
 async def brzi_unos(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+
+    # Ako je AI mod aktivan, preusmjeri na AI
+    if ctx.user_data.get("ai_mode", False):
+        if text.lower() in ["/kraj", "/stop", "kraj", "stop", "izlaz"]:
+            ctx.user_data["ai_mode"] = False
+            ctx.user_data["ai_history"] = []
+            await update.message.reply_text("👋 AI mod zatvoren.")
+            return
+        await _process_ai_message(update, ctx, text)
+        return
+
+    # Brisanje po broju
     if "docs_za_brisanje" in ctx.user_data:
         try:
             br = int(text)
@@ -251,6 +416,7 @@ async def brzi_unos(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except:
             del ctx.user_data["docs_za_brisanje"]
 
+    # Brzi unos: "Naziv DD.MM.YYYY"
     parts = text.rsplit(" ", 1)
     if len(parts) == 2:
         naziv, datum_raw = parts
@@ -268,7 +434,7 @@ async def brzi_unos(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
 
     await update.message.reply_text(
-        "❓ Ne razumijem.\n\nKoristi /dodaj ili piši:\n`Naziv dokumenta 31.12.2025`",
+        "❓ Ne razumijem.\n\nKoristi /dodaj, /ai za AI asistenta, ili piši:\n`Naziv dokumenta 31.12.2025`",
         parse_mode="Markdown"
     )
 
@@ -292,6 +458,8 @@ def main():
     app.add_handler(CommandHandler("izvjestaj", izvjestaj))
     app.add_handler(CommandHandler("podsjetnik_on", podsjetnik_on))
     app.add_handler(CommandHandler("podsjetnik_off", podsjetnik_off))
+    app.add_handler(CommandHandler(["ai", "pitaj"], ai_komanda))
+    app.add_handler(CommandHandler(["kraj", "stop"], ai_stop))
     app.add_handler(conv)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, brzi_unos))
 
