@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, JobQueue
 
 TOKEN = os.environ.get("BOT_TOKEN")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 DATA_FILE = "dokumenti.json"
 SETTINGS_FILE = "settings.json"
 
@@ -117,32 +117,35 @@ U svim ostalim slučajevima odgovaraj normalno na bosanskom/srpskom jeziku.
 Budi koncizan, prijateljski i praktičan. Koristit emotikone umjereno."""
 
 async def ai_chat(user_message: str, docs_context: str, history: list) -> str:
-    """Poziva Anthropic API."""
-    if not ANTHROPIC_API_KEY:
-        return "❌ AI nije konfigurisan. Postavi ANTHROPIC_API_KEY environment varijablu."
+    """Poziva Gemini Flash API."""
+    if not GEMINI_API_KEY:
+        return "❌ AI nije konfigurisan. Postavi GEMINI_API_KEY environment varijablu."
 
-    system = f"{AI_SYSTEM_PROMPT}\n\nTrenutno stanje dokumenata:\n{docs_context}"
+    system_with_context = f"{AI_SYSTEM_PROMPT}\n\nTrenutno stanje dokumenata:\n{docs_context}"
 
-    messages = history + [{"role": "user", "content": user_message}]
+    # Gemini format za historiju
+    contents = []
+    for msg in history:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+    contents.append({"role": "user", "parts": [{"text": user_message}]})
+
+    payload = {
+        "system_instruction": {"parts": [{"text": system_with_context}]},
+        "contents": contents,
+        "generationConfig": {
+            "maxOutputTokens": 1000,
+            "temperature": 0.7,
+        }
+    }
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": 1000,
-                "system": system,
-                "messages": messages,
-            }
-        )
+        response = await client.post(url, json=payload)
         response.raise_for_status()
         data = response.json()
-        return data["content"][0]["text"]
+        return data["candidates"][0]["content"]["parts"][0]["text"]
 
 async def podsjetnik_job(ctx: ContextTypes.DEFAULT_TYPE):
     settings = load_settings()
