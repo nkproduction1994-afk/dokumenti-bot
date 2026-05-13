@@ -144,10 +144,16 @@ async def ai_chat(user_message: str, docs_context: str, history: list) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-001:generateContent?key={GEMINI_API_KEY}"
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(url, json=payload)
-        response.raise_for_status()
-        data = response.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        for attempt in range(3):
+            response = await client.post(url, json=payload)
+            if response.status_code == 429:
+                wait = 10 * (attempt + 1)
+                await asyncio.sleep(wait)
+                continue
+            response.raise_for_status()
+            data = response.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        return "⚠️ Gemini je zauzet, pokušaj za koji trenutak."
 
 async def podsjetnik_job(ctx: ContextTypes.DEFAULT_TYPE):
     settings = load_settings()
