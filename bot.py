@@ -7,6 +7,11 @@ from datetime import datetime, time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, JobQueue
 
+
+def h(text: str) -> str:
+    """Escapuje specijalne HTML karaktere — uvijek koristiti za korisničke podatke."""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 TOKEN = os.environ.get("BOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 DATA_FILE = "dokumenti.json"
@@ -98,16 +103,16 @@ def build_report():
     if not expired and not soon:
         return None
 
-    msg = f"🌅 *Jutarnji izvještaj* — {today.strftime('%d.%m.%Y')}\n\n"
+    msg = f"🌅 <b>Jutarnji izvještaj</b> — {today.strftime('%d.%m.%Y')}\n\n"
     if expired:
-        msg += f"🔴 *ISTEKLO ({len(expired)}):*\n"
+        msg += f"🔴 <b>ISTEKLO ({len(expired)}):</b>\n"
         for d, diff in sorted(expired, key=lambda x: x[1]):
-            msg += f"• {d['naziv']} — {diff} dana isteklo\n"
+            msg += f"• {h(d['naziv'])} — {diff} dana isteklo\n"
         msg += "\n"
     if soon:
-        msg += f"🟡 *USKORO ISTIČE ({len(soon)}):*\n"
+        msg += f"🟡 <b>USKORO ISTIČE ({len(soon)}):</b>\n"
         for d, diff in sorted(soon, key=lambda x: x[1]):
-            msg += f"• {d['naziv']} — za {diff} dana\n"
+            msg += f"• {h(d['naziv'])} — za {diff} dana\n"
     return msg
 
 def build_docs_context():
@@ -169,6 +174,7 @@ def schedule_napomena(job_queue, napomena, chat_id):
     return True
 
 async def napomena_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["in_conv"] = True
     await update.message.reply_text(
         "📝 *Nova napomena / podsjetnik*\n\n"
         "Unesi tekst napomene:\n"
@@ -258,17 +264,19 @@ async def _sacuvaj_napomenu(update, ctx, dokument):
     save_napomene(naps)
 
     schedule_napomena(ctx.application.job_queue, nap, chat_id)
+    ctx.user_data["in_conv"] = False
 
-    doc_info = f"\n📎 Vezano za: *{dokument['naziv']}*" if dokument else ""
+    doc_info = f"\n📎 Vezano za: <b>{h(dokument['naziv'])}</b>" if dokument else ""
     await update.message.reply_text(
-        f"✅ *Podsjetnik sačuvan!*\n\n"
-        f"📝 {nap['tekst']}\n"
-        f"⏰ {nap['datetime']}"
+        f"✅ <b>Podsjetnik sačuvan!</b>\n\n"
+        f"📝 {h(nap['tekst'])}\n"
+        f"⏰ {h(nap['datetime'])}"
         f"{doc_info}",
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 async def napomena_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["in_conv"] = False
     await update.message.reply_text("❌ Otkazano.")
     return ConversationHandler.END
 
@@ -283,11 +291,11 @@ async def lista_napomena(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 Nema aktivnih podsjetnika.")
         return
 
-    msg = f"🔔 *Aktivni podsjetnici ({len(aktivne)}):*\n\n"
+    msg = f"🔔 <b>Aktivni podsjetnici ({len(aktivne)}):</b>\n\n"
     for i, n in enumerate(aktivne, 1):
-        doc_info = f" _(📎 {n['dokument']})_" if n.get("dokument") else ""
-        msg += f"{i}. *{n['tekst']}*\n⏰ {n['datetime']}{doc_info}\n\n"
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        doc_info = f" <i>(📎 {h(n['dokument'])})</i>" if n.get("dokument") else ""
+        msg += f"{i}. <b>{h(n['tekst'])}</b>\n⏰ {h(n['datetime'])}{doc_info}\n\n"
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 async def brisanje_napomene(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     naps = load_napomene()
@@ -299,12 +307,12 @@ async def brisanje_napomene(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 Nema aktivnih podsjetnika za brisanje.")
         return
 
-    msg = "🗑 *Koji podsjetnik obrisati?*\n\nPošalji broj:\n\n"
+    msg = "🗑 <b>Koji podsjetnik obrisati?</b>\n\nPošalji broj:\n\n"
     for i, n in enumerate(aktivne, 1):
-        msg += f"{i}. {n['tekst']} — {n['datetime']}\n"
+        msg += f"{i}. {h(n['tekst'])} — {h(n['datetime'])}\n"
 
     ctx.user_data["naps_za_brisanje"] = aktivne
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 # ── Fajlovi ──────────────────────────────────────────────────────────────────
 def load_fajlovi():
@@ -322,6 +330,7 @@ def ensure_files_dir():
         os.makedirs(FILES_DIR)
 
 async def sacuvaj_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["in_conv"] = True
     await update.message.reply_text(
         "💾 *Čuvanje fajla*\n\n"
         "Prvo unesi naziv/opis fajla:\n"
@@ -420,18 +429,20 @@ async def _sacuvaj_fajl_finalize(update, ctx, dokument):
     }
     fajlovi.append(fajl)
     save_fajlovi(fajlovi)
+    ctx.user_data["in_conv"] = False
 
-    doc_info = f"\n📎 Vezano za: *{dokument['naziv']}*" if dokument else ""
+    doc_info = f"\n📎 Vezano za: <b>{h(dokument['naziv'])}</b>" if dokument else ""
     await update.message.reply_text(
-        f"✅ *Fajl sačuvan!*\n\n"
-        f"📄 {fajl['naziv']}\n"
-        f"🗂 {fajl['original_name']}"
+        f"✅ <b>Fajl sačuvan!</b>\n\n"
+        f"📄 {h(fajl['naziv'])}\n"
+        f"🗂 {h(fajl['original_name'])}"
         f"{doc_info}\n\n"
         "Koristiti /fajlovi za pregled svih fajlova.",
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 async def sacuvaj_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["in_conv"] = False
     await update.message.reply_text("❌ Otkazano.")
     return ConversationHandler.END
 
@@ -443,14 +454,14 @@ async def lista_fajlova(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    msg = f"📁 *Sačuvani fajlovi ({len(fajlovi)}):*\n\n"
+    msg = f"📁 <b>Sačuvani fajlovi ({len(fajlovi)}):</b>\n\n"
     for i, f in enumerate(fajlovi, 1):
-        doc_info = f" _(📎 {f['dokument']})_" if f.get("dokument") else ""
-        msg += f"{i}. *{f['naziv']}*\n🗂 {f['original_name']}{doc_info}\n📅 {f['datum_unosa']}\n\n"
+        doc_info = f" <i>(📎 {h(f['dokument'])})</i>" if f.get("dokument") else ""
+        msg += f"{i}. <b>{h(f['naziv'])}</b>\n🗂 {h(f['original_name'])}{doc_info}\n📅 {h(f['datum_unosa'])}\n\n"
 
-    msg += "💡 Pošalji broj (npr. `2`) da dobiješ fajl nazad."
+    msg += "💡 Pošalji broj (npr. <code>2</code>) da dobiješ fajl nazad."
     ctx.user_data["fajlovi_lista"] = fajlovi
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 async def fajlovi_dokumenta(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = ctx.args
@@ -467,19 +478,19 @@ async def fajlovi_dokumenta(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if not filtrirani:
         await update.message.reply_text(
-            f"📭 Nema fajlova vezanih za *{' '.join(args)}*.\n\n"
+            f"📭 Nema fajlova vezanih za <b>{h(' '.join(args))}</b>.\n\n"
             "Provjeri naziv dokumenta sa /lista",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
         return
 
-    msg = f"📁 *Fajlovi za {' '.join(args)} ({len(filtrirani)}):*\n\n"
+    msg = f"📁 <b>Fajlovi za {h(' '.join(args))} ({len(filtrirani)}):</b>\n\n"
     for i, f in enumerate(filtrirani, 1):
-        msg += f"{i}. *{f['naziv']}*\n🗂 {f['original_name']}\n📅 {f['datum_unosa']}\n\n"
+        msg += f"{i}. <b>{h(f['naziv'])}</b>\n🗂 {h(f['original_name'])}\n📅 {h(f['datum_unosa'])}\n\n"
 
     msg += "💡 Pošalji broj da dobiješ fajl."
     ctx.user_data["fajlovi_lista"] = filtrirani
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 async def brisanje_fajla(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     fajlovi = load_fajlovi()
@@ -487,12 +498,12 @@ async def brisanje_fajla(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 Nema fajlova za brisanje.")
         return
 
-    msg = "🗑 *Koji fajl obrisati?*\n\nPošalji broj:\n\n"
+    msg = "🗑 <b>Koji fajl obrisati?</b>\n\nPošalji broj:\n\n"
     for i, f in enumerate(fajlovi, 1):
-        msg += f"{i}. {f['naziv']} — {f['original_name']}\n"
+        msg += f"{i}. {h(f['naziv'])} — {h(f['original_name'])}\n"
 
     ctx.user_data["fajlovi_za_brisanje"] = fajlovi
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 # ── AI ───────────────────────────────────────────────────────────────────────
 AI_SYSTEM_PROMPT = """Ti si prijateljski asistent integriran u Telegram bota.
@@ -555,7 +566,7 @@ async def podsjetnik_job(ctx: ContextTypes.DEFAULT_TYPE):
         return
     msg = build_report()
     if msg:
-        await ctx.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+        await ctx.bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
 
 # ── Komande ──────────────────────────────────────────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -627,9 +638,10 @@ async def izvjestaj(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if msg:
         await update.message.reply_text(msg, parse_mode="Markdown")
     else:
-        await update.message.reply_text("✅ *Sve je uređeno!* Nema isteklih ni dokumenata koji uskoro ističu.", parse_mode="Markdown")
+        await update.message.reply_text("✅ <b>Sve je uređeno!</b> Nema isteklih ni dokumenata koji uskoro ističu.", parse_mode="HTML")
 
 async def dodaj_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["in_conv"] = True
     await update.message.reply_text("📄 *Naziv dokumenta?*\n\nnpr. _Registracija VW Golf_", parse_mode="Markdown")
     return NAZIV
 
@@ -651,13 +663,15 @@ async def dodaj_datum(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     docs.append(doc)
     save_docs(docs)
     label, _, _ = status(date_str)
+    ctx.user_data["in_conv"] = False
     await update.message.reply_text(
-        f"✅ *Sačuvano!*\n\n📄 {doc['naziv']}\n📅 {date_str}\nStatus: {label}",
-        parse_mode="Markdown"
+        f"✅ <b>Sačuvano!</b>\n\n📄 {h(doc['naziv'])}\n📅 {h(date_str)}\nStatus: {label}",
+        parse_mode="HTML"
     )
     return ConversationHandler.END
 
 async def dodaj_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["in_conv"] = False
     await update.message.reply_text("❌ Otkazano.")
     return ConversationHandler.END
 
@@ -667,11 +681,11 @@ async def lista(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 Nema dokumenata. Dodaj prvi sa /dodaj")
         return
     docs_sorted = sorted(docs, key=lambda d: datetime.strptime(d["datum"], "%d.%m.%Y"))
-    msg = "📋 *Svi dokumenti:*\n\n"
+    msg = "📋 <b>Svi dokumenti:</b>\n\n"
     for d in docs_sorted:
         label, _, _ = status(d["datum"])
-        msg += f"{label} *{d['naziv']}*\n📅 {d['datum']}\n\n"
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        msg += f"{label} <b>{h(d['naziv'])}</b>\n📅 {h(d['datum'])}\n\n"
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 async def uskoro(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     docs = load_docs()
@@ -682,10 +696,10 @@ async def uskoro(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not filtered:
         await update.message.reply_text("✅ Nema dokumenata koji ističu u narednih 30 dana.")
         return
-    msg = f"🟡 *Uskoro ističe ({len(filtered)}):*\n\n"
+    msg = f"🟡 <b>Uskoro ističe ({len(filtered)}):</b>\n\n"
     for d, diff in filtered:
-        msg += f"⚠️ *{d['naziv']}*\n📅 {d['datum']} — za {diff} dana\n\n"
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        msg += f"⚠️ <b>{h(d['naziv'])}</b>\n📅 {h(d['datum'])} — za {diff} dana\n\n"
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 async def isteklo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     docs = load_docs()
@@ -696,10 +710,10 @@ async def isteklo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not filtered:
         await update.message.reply_text("✅ Nema isteklih dokumenata.")
         return
-    msg = f"🔴 *Isteklo ({len(filtered)}):*\n\n"
+    msg = f"🔴 <b>Isteklo ({len(filtered)}):</b>\n\n"
     for d, diff in filtered:
-        msg += f"❌ *{d['naziv']}*\n📅 {d['datum']} — {diff} dana isteklo\n\n"
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        msg += f"❌ <b>{h(d['naziv'])}</b>\n📅 {h(d['datum'])} — {diff} dana isteklo\n\n"
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 async def brisanje(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     docs = load_docs()
@@ -707,11 +721,11 @@ async def brisanje(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 Nema dokumenata za brisanje.")
         return
     docs_sorted = sorted(docs, key=lambda d: datetime.strptime(d["datum"], "%d.%m.%Y"))
-    msg = "🗑 *Koji dokument obrisati?*\n\nPošalji broj:\n\n"
+    msg = "🗑 <b>Koji dokument obrisati?</b>\n\nPošalji broj:\n\n"
     for i, d in enumerate(docs_sorted, 1):
-        msg += f"{i}. {d['naziv']} — {d['datum']}\n"
+        msg += f"{i}. {h(d['naziv'])} — {h(d['datum'])}\n"
     ctx.user_data["docs_za_brisanje"] = docs_sorted
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 async def ai_komanda(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if "ai_history" not in ctx.user_data:
@@ -765,8 +779,8 @@ async def _process_ai_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE, us
                     save_docs(docs)
                     label, _, _ = status(date_str)
                     await thinking_msg.edit_text(
-                        f"✅ *Dokument dodan putem AI!*\n\n📄 {naziv}\n📅 {date_str}\nStatus: {label}",
-                        parse_mode="Markdown"
+                        f"✅ <b>Dokument dodan putem AI!</b>\n\n📄 {h(naziv)}\n📅 {h(date_str)}\nStatus: {label}",
+                        parse_mode="HTML"
                     )
                     ctx.user_data["ai_history"] = history + [
                         {"role": "user", "content": user_text},
@@ -806,7 +820,7 @@ async def brzi_unos(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # Misko trigger — aktivira AI mod
-    if text_lower.startswith("misko"):
+    if text_lower.startswith("misko") and not ctx.user_data.get("in_conv", False):
         ostatak = text[5:].strip()
         # "Misko kraj/stop" — zatvori AI mod
         if ostatak.lower() in ["kraj", "stop", "izlaz"]:
@@ -827,8 +841,8 @@ async def brzi_unos(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # AI mod aktivan — sve poruke idu AI-u
-    if ctx.user_data.get("ai_mode", False):
+    # AI mod aktivan — sve poruke idu AI-u (osim ako smo u ConversationHandleru)
+    if ctx.user_data.get("ai_mode", False) and not ctx.user_data.get("in_conv", False):
         if text_lower in ["/kraj", "/stop", "kraj", "stop", "izlaz"]:
             ctx.user_data["ai_mode"] = False
             ctx.user_data["ai_history"] = []
@@ -941,8 +955,8 @@ async def brzi_unos(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             save_docs(docs)
             label, _, _ = status(date_str)
             await update.message.reply_text(
-                f"✅ *Sačuvano!*\n\n📄 {doc['naziv']}\n📅 {date_str}\nStatus: {label}",
-                parse_mode="Markdown"
+                f"✅ <b>Sačuvano!</b>\n\n📄 {h(doc['naziv'])}\n📅 {h(date_str)}\nStatus: {label}",
+                parse_mode="HTML"
             )
             return
 
