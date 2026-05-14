@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import random
 import httpx
 from datetime import datetime, time
 from telegram import Update
@@ -12,6 +13,15 @@ DATA_FILE = "dokumenti.json"
 SETTINGS_FILE = "settings.json"
 
 NAZIV, DATUM = range(2)
+
+# ── Goca fraze ──────────────────────────────────────────────────────────────
+GOCA_FRAZE = [
+    "🐌 Da li ste znali da puževi mogu spavati mesecima bez hrane?",
+    "🐌 Da li ste znali da puževi imaju hiljade sitnih zuba na jeziku?",
+    "🐌 Da li ste znali da puževi ostavljaju sluz kako bi lakše klizili po površinama?",
+    "🐌 Da li ste znali da neki puževi mogu nositi kućicu težu od svog tela?",
+    "🐌 Da li ste znali da puževi mogu preživeti i veoma hladne uslove skrivajući se u zemlji?",
+]
 
 def load_docs():
     if os.path.exists(DATA_FILE):
@@ -83,7 +93,6 @@ def build_report():
     return msg
 
 def build_docs_context():
-    """Gradi kontekst o dokumentima za AI."""
     docs = load_docs()
     today = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
     if not docs:
@@ -103,25 +112,24 @@ def build_docs_context():
 AI_SYSTEM_PROMPT = """Ti si prijateljski asistent integriran u Telegram bota.
 Primarno pomažeš korisniku da prati rokove važnosti dokumenata, ali možeš razgovarati o bilo čemu.
 
+Imaš pristup internetu putem Google pretrage — koristi ga kad god trebaš aktualne informacije (vijesti, vremenska prognoza, kursevi, sportski rezultati, itd.).
+
 Kada korisnik želi dodati dokument (npr. "dodaj registraciju auta do 15.3.2026" ili "vozačka ističe 01.06.2026"):
 Vrati SAMO JSON u ovom formatu, bez ikakvog drugog teksta:
 {"action": "dodaj_dokument", "naziv": "Naziv dokumenta", "datum": "DD.MM.YYYY"}
 
 U svim ostalim slučajevima odgovaraj normalno na bosanskom/srpskom jeziku.
-Ako te pitaju o vremenu, vijestima ili nečem što ne možeš znati, reci da nemaš pristup internetu ali pokušaj pomoći koliko možeš.
 Budi koncizan, prijateljski i praktičan. Koristi emotikone umjereno."""
 
 async def ai_chat(user_message: str, docs_context: str, history: list) -> str:
-    """Poziva Gemini Flash API."""
     if not GEMINI_API_KEY:
         return "❌ AI nije konfigurisan. Postavi GEMINI_API_KEY environment varijablu."
 
     system_with_context = f"{AI_SYSTEM_PROMPT}\n\nTrenutno stanje dokumenata:\n{docs_context}"
 
-    # System prompt kao prvi user/model par
     contents = [
         {"role": "user", "parts": [{"text": system_with_context}]},
-        {"role": "model", "parts": [{"text": "Razumijem, spreman sam pomoci."}]},
+        {"role": "model", "parts": [{"text": "Razumijem, spreman sam pomoći."}]},
     ]
     for msg in history:
         role = "user" if msg["role"] == "user" else "model"
@@ -130,15 +138,16 @@ async def ai_chat(user_message: str, docs_context: str, history: list) -> str:
 
     payload = {
         "contents": contents,
+        "tools": [{"google_search": {}}],
         "generationConfig": {
-            "maxOutputTokens": 1000,
+            "maxOutputTokens": 1500,
             "temperature": 0.7,
         }
     }
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=45.0) as client:
         for attempt in range(3):
             response = await client.post(url, json=payload)
             if response.status_code == 429:
@@ -147,7 +156,10 @@ async def ai_chat(user_message: str, docs_context: str, history: list) -> str:
                 continue
             response.raise_for_status()
             data = response.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+            # Izvuci text iz svih parts (search može dodati više blokova)
+            parts = data["candidates"][0]["content"]["parts"]
+            text_parts = [p["text"] for p in parts if "text" in p]
+            return "\n".join(text_parts) if text_parts else "⚠️ Nisam dobio odgovor."
         return "⚠️ Gemini je zauzet, pokušaj za koji trenutak."
 
 async def podsjetnik_job(ctx: ContextTypes.DEFAULT_TYPE):
@@ -308,12 +320,9 @@ async def brisanje(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def ai_komanda(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Pokreće AI asistenta — /ai ili /pitaj, opcionalno s porukom."""
-    # Inicijalizuj historiju ako ne postoji
     if "ai_history" not in ctx.user_data:
         ctx.user_data["ai_history"] = []
 
-    # Provjeri da li je poruka proslijeđena uz komandu (npr. /ai koji dokumenti ističu?)
     args = ctx.args
     if args:
         user_text = " ".join(args)
@@ -322,17 +331,16 @@ async def ai_komanda(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["ai_mode"] = True
         await update.message.reply_text(
             "🤖 *AI Asistent aktivan!*\n\n"
-            "Pitaj me bilo šta o tvojim dokumentima ili piši slobodno.\n\n"
+            "Pitaj me bilo šta — o dokumentima, vijestima, vremenu, ili bilo čemu drugom.\n\n"
             "Primjeri:\n"
             "• _Koji dokumenti ističu uskoro?_\n"
-            "• _Šta trebam uraditi za isteklu registraciju?_\n"
+            "• _Kakvo je vrijeme u Sarajevu?_\n"
             "• _Dodaj vozačku dozvolu do 15.3.2027_\n\n"
             "Za izlaz iz AI moda piši /kraj ili /stop",
             parse_mode="Markdown"
         )
 
 async def ai_stop(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Izlaz iz AI moda."""
     ctx.user_data["ai_mode"] = False
     ctx.user_data["ai_history"] = []
     await update.message.reply_text(
@@ -341,17 +349,14 @@ async def ai_stop(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 async def _process_ai_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE, user_text: str):
-    """Obrađuje poruku kroz AI i eventualno dodaje dokument."""
     docs_context = build_docs_context()
     history = ctx.user_data.get("ai_history", [])
 
-    # Pošalji "kuca..." indikator
     thinking_msg = await update.message.reply_text("🤖 _Razmišljam..._", parse_mode="Markdown")
 
     try:
         response_text = await ai_chat(user_text, docs_context, history)
 
-        # Provjeri da li AI želi dodati dokument (JSON akcija)
         stripped = response_text.strip()
         if stripped.startswith("{") and '"action": "dodaj_dokument"' in stripped:
             try:
@@ -369,19 +374,16 @@ async def _process_ai_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE, us
                         f"✅ *Dokument dodan putem AI!*\n\n📄 {naziv}\n📅 {date_str}\nStatus: {label}",
                         parse_mode="Markdown"
                     )
-                    # Dodaj u historiju
                     ctx.user_data["ai_history"] = history + [
                         {"role": "user", "content": user_text},
                         {"role": "assistant", "content": f"Dodao sam dokument: {naziv}, datum: {date_str}"}
                     ]
                     return
             except json.JSONDecodeError:
-                pass  # Nije JSON, nastavi normalno
+                pass
 
-        # Normalan AI odgovor — ažuriraj poruku
         await thinking_msg.edit_text(response_text, parse_mode="Markdown")
 
-        # Čuvaj historiju (max 10 poruka da ne bude prevelika)
         new_history = history + [
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": response_text}
@@ -393,41 +395,14 @@ async def _process_ai_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE, us
     except Exception as e:
         await thinking_msg.edit_text(f"❌ Greška: {str(e)}")
 
-
+# ── Goca — random fraza iz liste ────────────────────────────────────────────
 async def goca_zanimljivost(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Šalje zanimljivost o puževima putem AI."""
-    thinking_msg = await update.message.reply_text("🐌 _Tražim zanimljivost o puževima..._", parse_mode="Markdown")
-    try:
-        prompt = "Napiši jednu kratku i zanimljivu činjenicu o puževima. Max 3 rečenice. Budi zabavan i interesantan. Počni sa emoji pužem 🐌."
-        
-        contents = [
-            {"role": "user", "parts": [{"text": prompt}]}
-        ]
-        payload = {
-            "contents": contents,
-            "generationConfig": {"maxOutputTokens": 200, "temperature": 1.0}
-        }
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            for attempt in range(3):
-                response = await client.post(url, json=payload)
-                if response.status_code == 429:
-                    await asyncio.sleep(10 * (attempt + 1))
-                    continue
-                response.raise_for_status()
-                data = response.json()
-                tekst = data["candidates"][0]["content"]["parts"][0]["text"]
-                await thinking_msg.edit_text(tekst)
-                return
-        await thinking_msg.edit_text("⚠️ Gemini je zauzet, pokušaj malo kasnije.")
-    except Exception as e:
-        await thinking_msg.edit_text(f"❌ Greška: {str(e)}")
+    tekst = random.choice(GOCA_FRAZE)
+    await update.message.reply_text(tekst)
 
 async def brzi_unos(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
-    # Ako je AI mod aktivan, preusmjeri na AI
     # Goca trigger
     if text.lower() == "goca":
         await goca_zanimljivost(update, ctx)
